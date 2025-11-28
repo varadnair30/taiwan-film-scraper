@@ -1,0 +1,16 @@
+{
+  "base_url": "http://www.dianying.com/en/users/top10",
+  "movie_selector": "tbody tr",
+  "title_selector": "td:nth-child(2) a",
+  "year_selector": "td:nth-child(2)",
+  "score_selector": "td:nth-child(3)",
+  "votes_selector": "td:nth-child(4)",
+  "url_selector": "td:nth-child(2) a",
+  "headless": false,
+  "use_proxy": false,
+  "proxy_url": "",
+  "page_load_delay": 3,
+  "run_interval_seconds": 300,
+  "save_json": true,
+  "save_csv": true
+}
