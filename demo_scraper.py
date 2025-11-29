@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -16,118 +17,316 @@ def load_config():
         return json.load(f)
 
 def setup_driver(config):
-    """Initialize Chrome with custom options to avoid detection"""
+    """Initialize Chrome with stronger anti-detection"""
     opts = Options()
 
     if config.get('headless', False):
         opts.add_argument('--headless=new')
 
-    # Proxy config if needed
     if config.get('use_proxy', False) and config.get('proxy_url'):
         opts.add_argument(f'--proxy-server={config["proxy_url"]}')
 
-    # These help avoid being flagged as a bot
     opts.add_argument('--disable-blink-features=AutomationControlled')
-    opts.add_argument('--no-sandbox')
     opts.add_argument('--disable-dev-shm-usage')
+    opts.add_argument('--no-sandbox')
     opts.add_argument('--disable-gpu')
     opts.add_argument('--window-size=1920,1080')
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_argument('--start-maximized')
+    opts.add_argument('--disable-extensions')
+    opts.add_argument('--dns-prefetch-disable')
+    opts.add_argument('--disable-browser-side-navigation')
+
+    opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     opts.add_experimental_option('useAutomationExtension', False)
 
-    # Real user agent
-    opts.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-
-    # Prevent crash popups
-    opts.add_argument('--disable-crash-reporter')
-    opts.add_argument('--disable-in-process-stack-traces')
+    opts.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
 
     try:
         driver = webdriver.Chrome(options=opts)
-        driver.set_page_load_timeout(30)  # 30 sec max wait
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        driver.set_page_load_timeout(30)
         return driver
     except Exception as e:
         print(f"Chrome startup failed: {e}")
         raise
 
+def google_search_improved(driver, query, max_results=10):
+    """Search Google and extract real URLs"""
+    print(f"Searching Google for: '{query}'")
+
+    try:
+        driver.get("https://www.google.com")
+        time.sleep(3)
+
+        # Handle cookie consent
+        try:
+            buttons = driver.find_elements(By.TAG_NAME, "button")
+            for btn in buttons:
+                if any(word in btn.text.lower() for word in ['accept', 'agree', 'ok']):
+                    btn.click()
+                    time.sleep(1)
+                    break
+        except:
+            pass
+
+        # Search
+        try:
+            search_box = driver.find_element(By.NAME, "q")
+        except:
+            search_box = driver.find_element(By.CSS_SELECTOR, "textarea[name='q']")
+
+        search_box.send_keys(query)
+        search_box.send_keys(Keys.RETURN)
+        time.sleep(5)
+
+        print("  Checking page content...")
+
+        # Try multiple selector strategies
+        urls = []
+
+        try:
+            results = driver.find_elements(By.CSS_SELECTOR, "div.g a[href]")
+            for result in results[:max_results * 2]:
+                try:
+                    url = result.get_attribute('href')
+                    if url and url.startswith('http') and 'google.com' not in url and 'youtube.com' not in url:
+                        if url not in urls:
+                            urls.append(url)
+                except:
+                    continue
+        except:
+            pass
+
+        if len(urls) < 3:
+            try:
+                links = driver.find_elements(By.CSS_SELECTOR, "a[jsname]")
+                for link in links[:max_results * 2]:
+                    try:
+                        url = link.get_attribute('href')
+                        if url and url.startswith('http') and 'google.com' not in url and 'youtube.com' not in url:
+                            if url not in urls:
+                                urls.append(url)
+                    except:
+                        continue
+            except:
+                pass
+
+        if len(urls) < 3:
+            try:
+                all_links = driver.find_elements(By.TAG_NAME, "a")
+                for link in all_links:
+                    try:
+                        url = link.get_attribute('href')
+                        if url and url.startswith('http') and 'google.com' not in url and 'youtube.com' not in url and 'facebook.com' not in url:
+                            if url not in urls:
+                                urls.append(url)
+                    except:
+                        continue
+            except:
+                pass
+
+        # Clean URLs
+        clean_urls = []
+        for url in urls:
+            clean_url = url.split('#')[0]
+            if clean_url not in clean_urls:
+                clean_urls.append(clean_url)
+
+        # Limit to max_results
+        final_urls = clean_urls[:max_results]
+
+        print(f"  Found {len(final_urls)} URLs from Google")
+        for i, url in enumerate(final_urls, 1):
+            print(f"    {i}. {url[:70]}...")
+
+        return final_urls
+
+    except Exception as e:
+        print(f"  Google search error: {e}")
+        return []
+
 def extract_year(text):
-    """Pull 4-digit year from strings like 'Movie Title (2000)'"""
-    match = re.search(r'\((\d{4})\)', text)
-    return match.group(1) if match else "N/A"
+    """Pull 4-digit year from strings"""
+    match = re.search(r'\b(19|20)\d{2}\b', text)
+    return match.group(0) if match else "N/A"
+
+def is_valid_movie_title(title):
+    """Check if title looks like a real movie"""
+    if not title or len(title) < 2:
+        return False
+
+    # Blacklist junk
+    junk_words = [
+        'home', 'login', 'signup', 'register', 'search', 'browse', 'menu',
+        'movies', 'tv shows', 'people', 'more', 'join', 'introduction',
+        'donate', 'create account', 'log in', 'sign up', 'see also',
+        'top', 'privacy', 'terms', 'about', 'contact', 'help', 'faq',
+        'pre 1970', '1970s', '1980s', '1990s', '2000s', '2010s', '2020s'
+    ]
+
+    title_lower = title.lower().strip()
+
+    if title_lower in junk_words:
+        return False
+
+    # Check starts with junk
+    for junk in junk_words:
+        if title_lower.startswith(junk + ' '):
+            return False
+
+    if len(title) < 2:
+        return False
+
+    if not re.search(r'[a-zA-Z]', title):
+        return False
+
+    return True
+
+def scrape_imdb_list(driver, max_items):
+    """Scrape IMDb movie lists"""
+    movies = []
+
+    try:
+        time.sleep(3)
+
+        items = driver.find_elements(By.CSS_SELECTOR, "div.lister-item")
+
+        if not items:
+            items = driver.find_elements(By.CSS_SELECTOR, "li.ipc-metadata-list-summary-item")
+
+        print(f"    Found {len(items)} IMDb items")
+
+        for idx, item in enumerate(items[:max_items], 1):
+            try:
+                # Get title
+                try:
+                    title_elem = item.find_element(By.CSS_SELECTOR, "h3.lister-item-header a")
+                    title = title_elem.text.strip()
+                    detail_url = title_elem.get_attribute('href')
+                except:
+                    try:
+                        title_elem = item.find_element(By.CSS_SELECTOR, "a.ipc-title-link-wrapper")
+                        title = title_elem.text.strip()
+                        detail_url = title_elem.get_attribute('href')
+                    except:
+                        continue
+
+                if not title or not is_valid_movie_title(title):
+                    continue
+
+                # Get year
+                try:
+                    year_elem = item.find_element(By.CSS_SELECTOR, "span.lister-item-year")
+                    year = extract_year(year_elem.text)
+                except:
+                    year = extract_year(item.text)
+
+                # Get rating
+                try:
+                    rating = item.find_element(By.CSS_SELECTOR, "div.ipc-rating-star").text.split()[0]
+                except:
+                    try:
+                        rating = item.find_element(By.CSS_SELECTOR, "span.ipc-rating-star--rating").text
+                    except:
+                        rating = "N/A"
+
+                entry = {
+                    'source_url': driver.current_url.split('#')[0],
+                    'title': title,
+                    'year': year,
+                    'score': rating,
+                    'votes': "N/A",
+                    'detail_url': detail_url if detail_url.startswith('http') else f"https://www.imdb.com{detail_url}",
+                    'scraped_at': datetime.now().isoformat()
+                }
+
+                movies.append(entry)
+
+            except:
+                continue
+
+        return movies
+
+    except Exception as e:
+        print(f"    IMDb scraping error: {e}")
+        return []
+
+def scrape_movie_site(driver, url, max_items):
+    """Try to scrape movie data from a given URL"""
+    movies = []
+
+    try:
+        print(f"  Visiting: {url[:70]}...")
+        driver.get(url)
+        time.sleep(4)
+
+        # Only scrape if it's IMDb
+        if 'imdb.com' in url:
+            movies = scrape_imdb_list(driver, max_items)
+        else:
+            print(f"    ⊘ Skipped (not IMDb)")
+
+        if movies:
+            print(f"    ✓ Extracted {len(movies)} movies")
+        else:
+            if 'imdb.com' in url:
+                print(f"    ✗ No movies extracted")
+
+    except Exception as e:
+        print(f"    ✗ Failed: {str(e)[:50]}")
+
+    return movies
 
 def scrape_once():
-    """Main scraping logic - runs once and saves results"""
+    """Main scraping logic - Google search then scrape"""
     config = load_config()
     driver = None
-    results = []
+    all_results = []
+    max_movies_per_site = config.get('max_movies_per_site', 30)
 
     try:
         print("Starting browser...")
         driver = setup_driver(config)
-        target = config['base_url']
 
-        print(f"Loading {target}...")
-        driver.get(target)
+        # Step 1: Search Google
+        search_query = config.get('search_keyword', 'Taiwanese film')
+        urls = google_search_improved(driver, search_query, max_results=config.get('max_google_results', 10))
 
-        # Wait for table to actually load
-        print("Waiting for content...")
-        wait = WebDriverWait(driver, 15)
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "tbody")))
+        if not urls:
+            print("\n✗ No URLs found from Google search")
+            write_log(0, "NO URLS")
+            return 0
 
-        # Give it a bit more time to fully render
-        time.sleep(config.get('page_load_delay', 3))
+        # Step 2: Scrape each URL
+        print(f"\nScraping {len(urls)} websites from Google results...\n")
+        for idx, url in enumerate(urls, 1):
+            print(f"Site {idx}/{len(urls)}:")
+            movies = scrape_movie_site(driver, url, max_movies_per_site)
+            all_results.extend(movies)
 
-        print("Extracting movie data...")
+            time.sleep(config.get('delay_between_sites', 3))
 
-        # Grab all table rows
-        rows = driver.find_elements(By.CSS_SELECTOR, config['movie_selector'])
+        # Remove duplicates
+        unique_movies = []
+        seen = set()
+        for movie in all_results:
+            key = (movie['title'].lower(), movie['year'])
+            if key not in seen:
+                seen.add(key)
+                unique_movies.append(movie)
 
-        print(f"Found {len(rows)} entries")
-
-        for i, row in enumerate(rows, 1):
-            try:
-                cells = row.find_elements(By.TAG_NAME, 'td')
-
-                if len(cells) < 4:
-                    continue  # Skip incomplete rows
-
-                # Title is a link in the 2nd column
-                link_elem = cells[1].find_element(By.TAG_NAME, 'a')
-                movie_title = link_elem.text.strip()
-                url = link_elem.get_attribute('href')
-
-                # Year is in parentheses after title
-                full_text = cells[1].text.strip()
-                movie_year = extract_year(full_text)
-
-                # Score and vote count
-                rating = cells[2].text.strip() if len(cells) > 2 else "N/A"
-                vote_count = cells[3].text.strip() if len(cells) > 3 else "N/A"
-
-                entry = {
-                    'rank': i,
-                    'title': movie_title,
-                    'year': movie_year,
-                    'score': rating,
-                    'votes': vote_count,
-                    'detail_url': url,
-                    'scraped_at': datetime.now().isoformat()
-                }
-
-                results.append(entry)
-                print(f"  #{i}: {movie_title} ({movie_year}) - {rating}/10")
-
-            except Exception as e:
-                print(f"Skipped row {i}: {e}")
-                continue
-
-        # Write to disk
-        if results:
-            save_data(results, config)
-            write_log(len(results), "SUCCESS")
-            print(f"\n✓ Done! Scraped {len(results)-1} movies")
+        # Save combined results
+        if unique_movies:
+            save_data(unique_movies, config)
+            write_log(len(unique_movies), "SUCCESS")
+            print(f"\n{'='*60}")
+            print(f"✓ SUCCESS: Scraped {len(unique_movies)} movies")
+            print(f"  Sites with data: {len(set([m['source_url'] for m in unique_movies]))}")
+            print(f"{'='*60}")
         else:
-            print("\n✗ Nothing scraped")
+            print(f"\n{'='*60}")
+            print("✗ No movies scraped from any site")
+            print(f"{'='*60}")
             write_log(0, "NO DATA")
 
     except Exception as e:
@@ -137,20 +336,19 @@ def scrape_once():
 
     finally:
         if driver:
-            print("Closing browser...")
+            print("\nClosing browser...")
             try:
                 driver.quit()
             except:
-                pass  # Already closed
+                pass
 
-    return len(results)
+    return len(unique_movies) if unique_movies else 0
 
 def save_data(data, config):
     """Write scraped data to JSON and CSV files"""
     if not data:
         return
 
-    # Make sure data folder exists
     Path('data').mkdir(exist_ok=True)
 
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -160,7 +358,7 @@ def save_data(data, config):
         json_path = f"data/movies_{ts}.json"
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"  → {json_path}")
+        print(f"  → Saved: {json_path}")
 
     # CSV format
     if config.get('save_csv', True):
@@ -170,7 +368,7 @@ def save_data(data, config):
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
             writer.writerows(data)
-        print(f"  → {csv_path}")
+        print(f"  → Saved: {csv_path}")
 
 def write_log(count, status):
     """Append run summary to log file"""
@@ -217,7 +415,7 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 1 and sys.argv[1] == "once":
         print("=" * 60)
-        print("SINGLE RUN MODE")
+        print("GOOGLE SEARCH + SCRAPE MODE")
         print("=" * 60)
         scrape_once()
     else:
