@@ -4,7 +4,7 @@ A Python-based web scraper for continuously collecting Chinese film data from on
 
 ## Demo
 
-![Scraper Demo](demo.gif)
+![Scraper Demo](demo_taiwan2.gif)
 
 *Automated scraping running in continuous mode*
 
